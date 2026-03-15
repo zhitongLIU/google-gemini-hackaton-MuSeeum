@@ -1,0 +1,13 @@
+.agents/*
+.claude/*
+.cursor/*
+.deepseek/*
+.gemini/*
+.google/*
+.openai/*
+.anthropic/*
+.perplexity/*
+.qwen/*
+.groq/*
+.mistral/*
+.mosaic/*

@@ -1,0 +1,20 @@
+# Do not upload to Cloud Build
+.git
+**/.git
+.gitignore
+.env
+*.env
+!*.env.example
+node_modules
+**/node_modules
+way-back-home
+.cursor
+*.log
+.DS_Store
+dist
+**/dist
+*.md
+!museeum-api/README.md
+!museeum-web/README.md
+.agents
+docs/plans

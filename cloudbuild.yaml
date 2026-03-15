@@ -1,0 +1,177 @@
+# MuSeeum - Cloud Build: deploy backend + frontend to Cloud Run
+#
+# Prerequisites:
+#   - Artifact Registry repo: gcloud artifacts repositories create museeum --repository-format=docker --location=us-central1
+#   - GEMINI_API_KEY: set secret "gemini-api-key" in Secret Manager, or pass _GEMINI_API_KEY (see below)
+#
+# Usage:
+#   gcloud builds submit --config cloudbuild.yaml .
+#   # With Gemini key as env (avoid for production):
+#   gcloud builds submit --config cloudbuild.yaml . --substitutions=_GEMINI_API_KEY=your_key
+#
+# Deploy only backend: _DEPLOY_FRONTEND=false
+# Deploy only frontend: _DEPLOY_BACKEND=false
+
+substitutions:
+  _REGION: europe-west9
+  _AR_REPO: museeum
+  _API_SERVICE_NAME: museeum-api
+  _FRONTEND_SERVICE_NAME: museeum-web
+  _DEPLOY_BACKEND: 'true'
+  _DEPLOY_FRONTEND: 'true'
+  _GEMINI_API_KEY: 'AIzaSyBfZZHveeKHpKKIY9vAbRj3m0gB0W8Smos'
+  _MUSEEUM_APP_ID: '972b9ec7-7b4c-47af-9ffe-e724a76a407e'
+  _JUDGE_ACCESS_CODE: 'hackathon2026a3ffc'
+
+steps:
+  # ---------------------------------------------------------------------------
+  # Backend: build image
+  # ---------------------------------------------------------------------------
+  - name: 'gcr.io/cloud-builders/docker'
+    id: build-backend
+    entrypoint: /bin/sh
+    args:
+      - '-c'
+      - |
+        if [ "${_DEPLOY_BACKEND}" = "true" ]; then
+          /usr/bin/docker build -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_API_SERVICE_NAME}:${BUILD_ID} \
+            -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_API_SERVICE_NAME}:latest \
+            ./museeum-api
+        else
+          echo "Skipping backend build"
+        fi
+
+  # ---------------------------------------------------------------------------
+  # Backend: push image
+  # ---------------------------------------------------------------------------
+  - name: 'gcr.io/cloud-builders/docker'
+    id: push-backend
+    waitFor: [build-backend]
+    entrypoint: /bin/sh
+    args:
+      - '-c'
+      - |
+        if [ "${_DEPLOY_BACKEND}" = "true" ]; then
+          /usr/bin/docker push ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_API_SERVICE_NAME}:${BUILD_ID}
+          /usr/bin/docker push ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_API_SERVICE_NAME}:latest
+        fi
+
+  # ---------------------------------------------------------------------------
+  # Backend: deploy to Cloud Run
+  # ---------------------------------------------------------------------------
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: deploy-backend
+    waitFor: [push-backend]
+    entrypoint: bash
+    args:
+      - '-c'
+      - |
+        if [ "${_DEPLOY_BACKEND}" != "true" ]; then
+          echo "Skipping backend deploy"
+          exit 0
+        fi
+        ENV_VARS=""
+        if [ -n "${_GEMINI_API_KEY}" ]; then
+          ENV_VARS="$$ENV_VARS,GEMINI_API_KEY=${_GEMINI_API_KEY}"
+        fi
+        if [ -n "${_MUSEEUM_APP_ID}" ]; then
+          ENV_VARS="$$ENV_VARS,MUSEEUM_APP_ID=${_MUSEEUM_APP_ID}"
+        fi
+        if [ -n "${_JUDGE_ACCESS_CODE}" ]; then
+          ENV_VARS="$$ENV_VARS,JUDGE_ACCESS_CODE=${_JUDGE_ACCESS_CODE}"
+        fi
+        ENV_FLAG=""
+        [ -n "$$ENV_VARS" ] && ENV_FLAG="--set-env-vars $${ENV_VARS#,}"
+        gcloud run deploy ${_API_SERVICE_NAME} \
+          --image ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_API_SERVICE_NAME}:${BUILD_ID} \
+          --region ${_REGION} \
+          --platform managed \
+          --allow-unauthenticated \
+          $$ENV_FLAG \
+          --min-instances 0 \
+          --max-instances 10 \
+          --timeout 300s
+        # Optional: use Secret Manager instead of _GEMINI_API_KEY:
+        # --set-secrets=GEMINI_API_KEY=gemini-api-key:latest
+
+  # ---------------------------------------------------------------------------
+  # Get backend URL for frontend build
+  # ---------------------------------------------------------------------------
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: get-backend-url
+    waitFor: [deploy-backend]
+    entrypoint: bash
+    args:
+      - '-c'
+      - |
+        if [ "${_DEPLOY_FRONTEND}" = "true" ]; then
+          gcloud run services describe ${_API_SERVICE_NAME} --region ${_REGION} --format 'value(status.url)' > backend_url.txt
+          echo "Backend URL: $(cat backend_url.txt)"
+        fi
+
+  # ---------------------------------------------------------------------------
+  # Frontend: build image (with VITE_API_URL = backend URL)
+  # ---------------------------------------------------------------------------
+  - name: 'gcr.io/cloud-builders/docker'
+    id: build-frontend
+    waitFor: [get-backend-url]
+    entrypoint: /bin/sh
+    args:
+      - '-c'
+      - |
+        if [ "${_DEPLOY_FRONTEND}" != "true" ]; then
+          echo "Skipping frontend build"
+          exit 0
+        fi
+        VITE_API_URL=$$(cat backend_url.txt)
+        BUILD_ARGS="--build-arg VITE_API_URL=$$VITE_API_URL"
+        if [ -n "${_MUSEEUM_APP_ID}" ]; then
+          BUILD_ARGS="$$BUILD_ARGS --build-arg VITE_MUSEEUM_APP_ID=${_MUSEEUM_APP_ID}"
+        fi
+        /usr/bin/docker build $$BUILD_ARGS \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_FRONTEND_SERVICE_NAME}:${BUILD_ID} \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_FRONTEND_SERVICE_NAME}:latest \
+          ./museeum-web
+
+  # ---------------------------------------------------------------------------
+  # Frontend: push image
+  # ---------------------------------------------------------------------------
+  - name: 'gcr.io/cloud-builders/docker'
+    id: push-frontend
+    waitFor: [build-frontend]
+    entrypoint: /bin/sh
+    args:
+      - '-c'
+      - |
+        if [ "${_DEPLOY_FRONTEND}" = "true" ]; then
+          /usr/bin/docker push ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_FRONTEND_SERVICE_NAME}:${BUILD_ID}
+          /usr/bin/docker push ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_FRONTEND_SERVICE_NAME}:latest
+        fi
+
+  # ---------------------------------------------------------------------------
+  # Frontend: deploy to Cloud Run
+  # ---------------------------------------------------------------------------
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: deploy-frontend
+    waitFor: [push-frontend]
+    entrypoint: bash
+    args:
+      - '-c'
+      - |
+        if [ "${_DEPLOY_FRONTEND}" != "true" ]; then
+          echo "Skipping frontend deploy"
+          exit 0
+        fi
+        gcloud run deploy ${_FRONTEND_SERVICE_NAME} \
+          --image ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_FRONTEND_SERVICE_NAME}:${BUILD_ID} \
+          --region ${_REGION} \
+          --platform managed \
+          --allow-unauthenticated \
+          --min-instances 0 \
+          --max-instances 10 \
+          --timeout 60s
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: '1200s'
