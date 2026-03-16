@@ -11,6 +11,9 @@ For full product and architecture details, see:
 - [ARCHITECTURE.md](ARCHITECTURE.md) — high‑level system and agent architecture
 - [docs/agent-app-architecture-guide.md](docs/agent-app-architecture-guide.md) — agent app design notes
 
+## for judge testing
+use https://museeum-web-7dbzezb27a-od.a.run.app
+and code: hackathon2026a3ffc
 ---
 
 ## Repository layout
