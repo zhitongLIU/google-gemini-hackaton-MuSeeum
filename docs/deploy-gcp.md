@@ -11,7 +11,7 @@ Deploy the backend (museeum-api) and frontend (museeum-web) to **Cloud Run** fro
 | Where        | What to set | How |
 |-------------|-------------|-----|
 | **Local dev** | `GEMINI_API_KEY`, optional `PORT` | Copy `museeum-api/.env.example` to `museeum-api/.env` and fill in your key. |
-| **Cloud Run (deploy)** | `GEMINI_API_KEY` | **Option A:** Pass when deploying: `GEMINI_API_KEY=your_key make deploy`. The deploy script also reads `museeum-api/.env` if the env var is not set. **Option B (production):** Store the key in Secret Manager (see [One-time setup](#one-time-setup)) and use `--set-secrets=GEMINI_API_KEY=gemini-api-key:latest` in `cloudbuild.yaml` instead of `--set-env-vars` with `_GEMINI_API_KEY`. |
+| **Cloud Run (deploy)** | `GEMINI_API_KEY` | Store the key in Secret Manager (see [One-time setup](#one-time-setup)). The Cloud Build config uses `--set-secrets=GEMINI_API_KEY=gemini-api-key:latest` when deploying the backend. |
 
 Other backend env vars (e.g. `PORT`) are set by Cloud Run or in the Dockerfile; add more in the backend deploy step’s `--set-env-vars` or `--set-secrets` if needed.
 
@@ -31,8 +31,8 @@ So: for **backend** you configure env (and optionally secrets) for the Cloud Run
 
 To allow only museeum-web to call museeum-api, set a shared **app id** (any secret string):
 
-- **Backend:** Set `MUSEEUM_APP_ID` in Cloud Run (via deploy script: `MUSEEUM_APP_ID=your-secret make deploy`, or add it to `museeum-api/.env` so the script picks it up and passes `_MUSEEUM_APP_ID`). The API will reject HTTP requests without the `X-Museeum-App-Id` header and WebSocket connections without the `appId` query param when this is set.
-- **Frontend:** Set `VITE_MUSEEUM_APP_ID` to the same value so the built app sends the header and query param. For deploy, set `MUSEEUM_APP_ID` when running the script (e.g. `MUSEEUM_APP_ID=your-secret make deploy`); the script passes it to Cloud Build for both the backend env and the frontend build arg. For local dev, set `VITE_MUSEEUM_APP_ID` in `museeum-web/.env` (see `museeum-web/.env.example`).
+- **Backend:** Create a Secret Manager secret named `museeum-app-id` whose value is your app id. The backend Cloud Run deploy step uses `--set-secrets=MUSEEUM_APP_ID=museeum-app-id:latest`, so the API will reject HTTP requests without the `X-Museeum-App-Id` header and WebSocket connections without the `appId` query param when this is set.
+- **Frontend:** The Cloud Build pipeline reads the `museeum-app-id` secret (if present) and passes it as `VITE_MUSEEUM_APP_ID` when building the frontend image, so the built app sends the header and query param automatically. For local dev, set `VITE_MUSEEUM_APP_ID` in `museeum-web/.env` (see `museeum-web/.env.example`).
 
 If you do not set an app id, any client can call the API (current behaviour).
 
@@ -40,7 +40,7 @@ If you do not set an app id, any client can call the API (current behaviour).
 
 To allow only people who have the code (e.g. hackathon judges) to use the app:
 
-- **Backend:** Set `JUDGE_ACCESS_CODE` in Cloud Run. When set, the API returns 403 for `POST /api/session` without a valid code and closes WebSocket connections that don’t send the code. Deploy with e.g. `JUDGE_ACCESS_CODE=your-code make deploy`, or add `JUDGE_ACCESS_CODE` to `museeum-api/.env` so the script passes `_JUDGE_ACCESS_CODE`.
+- **Backend:** Create a Secret Manager secret named `judge-access-code` whose value is your judge code. The backend Cloud Run deploy step uses `--set-secrets=JUDGE_ACCESS_CODE=judge-access-code:latest`. When set, the API returns 403 for `POST /api/session` without a valid code and closes WebSocket connections that don’t send the code.
 - **Frontend:** No build-time config. Users see an “Enter access code” gate; they can type the code or open a magic link with the code in the URL (`?access=your-code`). Give judges the link or the code.
 
 If you do not set a judge code, anyone can use the app.
@@ -62,14 +62,22 @@ make setup
 
 This enables Cloud Run, Cloud Build, and Artifact Registry, and creates the Artifact Registry repository `museeum` if it does not exist.
 
-**Gemini API key (required for the Live Agent):**
+**Secrets (required for production):**
 
-- **Option A (quick):** Pass the key when deploying: `GEMINI_API_KEY=your_key make deploy`
-- **Option B (recommended for production):** Store in Secret Manager:
+- **Gemini API key:** Store in Secret Manager:
   ```bash
   echo -n "YOUR_GEMINI_API_KEY" | gcloud secrets create gemini-api-key --data-file=- --project=YOUR_PROJECT_ID
   ```
-  Then grant Cloud Run access to the secret and update `cloudbuild.yaml` to use `--set-secrets=GEMINI_API_KEY=gemini-api-key:latest` in the backend deploy step instead of `_GEMINI_API_KEY`.
+- **App ID (optional, to restrict API to museeum-web):**
+  ```bash
+  echo -n "YOUR_MUSEEUM_APP_ID" | gcloud secrets create museeum-app-id --data-file=- --project=YOUR_PROJECT_ID
+  ```
+- **Judge access code (optional, to restrict app to judges/organizers):**
+  ```bash
+  echo -n "YOUR_JUDGE_ACCESS_CODE" | gcloud secrets create judge-access-code --data-file=- --project=YOUR_PROJECT_ID
+  ```
+
+Then grant Cloud Run access to these secrets. The `cloudbuild.yaml` is configured to mount them into the backend using `--set-secrets=...` and to pass `museeum-app-id` into the frontend build when present.
 
 ## Deploy both (recommended)
 

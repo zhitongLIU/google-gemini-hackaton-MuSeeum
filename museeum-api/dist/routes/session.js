@@ -11,7 +11,15 @@ export function getSession(sessionId) {
     return sessions.get(sessionId);
 }
 export const sessionRouter = Router();
-sessionRouter.post("/session", (_req, res) => {
+sessionRouter.post("/session", (req, res) => {
+    const expected = process.env.JUDGE_ACCESS_CODE;
+    if (expected) {
+        const provided = req.body?.accessCode ?? req.get("x-judge-access-code") ?? "";
+        if (provided !== expected) {
+            res.status(403).json({ error: "Invalid or missing access code" });
+            return;
+        }
+    }
     const record = createSession();
     res.json({ sessionId: record.id });
 });

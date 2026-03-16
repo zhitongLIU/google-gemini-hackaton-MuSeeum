@@ -4,18 +4,22 @@ const DOCENT_SYSTEM_INSTRUCTION = `You are a friendly museum docent — knowledg
 export function createGeminiLiveUrl(apiKey) {
     return `${GEMINI_WS_URL}?key=${encodeURIComponent(apiKey)}`;
 }
+const DEFAULT_LIVE_MODEL = "models/gemini-2.5-flash-native-audio-preview-12-2025";
 export function buildSetupMessage() {
+    const model = process.env.GEMINI_LIVE_MODEL || DEFAULT_LIVE_MODEL;
+    const modelId = model.startsWith("models/") ? model : `models/${model}`;
+    // Native audio model often accepts only AUDIO in responseModalities
+    const isNativeAudio = modelId.includes("native-audio");
+    const responseModalities = isNativeAudio ? ["AUDIO"] : ["AUDIO", "TEXT"];
     return {
         setup: {
-            model: "models/gemini-2.5-flash-native-audio-preview-12-2025",
+            model: modelId,
             systemInstruction: {
                 parts: [{ text: DOCENT_SYSTEM_INSTRUCTION }],
             },
             generationConfig: {
-                responseModalities: ["TEXT", "AUDIO"],
+                responseModalities,
             },
-            inputAudioTranscription: {},
-            outputAudioTranscription: {},
         },
     };
 }
@@ -36,6 +40,22 @@ export function buildRealtimeTextMessage(text) {
         },
     };
 }
+/** Normalize base64 image (strip data URL prefix if present) */
+function normalizeImageData(data) {
+    return data.replace(/^data:image\/\w+;base64,/, "");
+}
+/** Send a single image/frame as realtimeInput.video so the Live Agent sees it in the same session (≤1 FPS). */
+export function buildRealtimeVideoMessage(base64Image, mimeType = "image/jpeg") {
+    return {
+        realtimeInput: {
+            video: {
+                mimeType,
+                data: normalizeImageData(base64Image),
+            },
+        },
+    };
+}
+/** Legacy: clientContent turn (can close the session on some models). Prefer buildRealtimeVideoMessage for live sessions. */
 export function buildClientContentWithImage(base64Image) {
     return {
         clientContent: {
@@ -46,7 +66,7 @@ export function buildClientContentWithImage(base64Image) {
                         {
                             inlineData: {
                                 mimeType: "image/jpeg",
-                                data: base64Image.replace(/^data:image\/\w+;base64,/, ""),
+                                data: normalizeImageData(base64Image),
                             },
                         },
                         { text: "Describe what you see in this image." },
@@ -57,24 +77,49 @@ export function buildClientContentWithImage(base64Image) {
         },
     };
 }
-export function connectToGemini(apiKey, onMessage, onClose) {
+export function connectToGemini(apiKey, onMessage, onClose, onError) {
     const url = createGeminiLiveUrl(apiKey);
     const geminiWs = new WebSocket(url);
     geminiWs.on("open", () => {
-        geminiWs.send(JSON.stringify(buildSetupMessage()));
+        const setup = buildSetupMessage();
+        console.log("[Gemini Live] Connected, sending setup (model: %s)", setup.setup.model);
+        geminiWs.send(JSON.stringify(setup));
     });
     geminiWs.on("message", (data) => {
         const raw = data.toString();
         try {
             const msg = JSON.parse(raw);
+            if (msg.error) {
+                const err = msg.error;
+                const message = err.message || err.status || JSON.stringify(msg.error);
+                console.error("[Gemini Live] Error from API:", message);
+                onError?.(String(message));
+                return;
+            }
+            if ("setupComplete" in msg) {
+                console.log("[Gemini Live] setupComplete received");
+            }
             onMessage(msg);
         }
         catch {
             // ignore non-JSON (e.g. binary)
         }
     });
-    geminiWs.on("close", onClose);
-    geminiWs.on("error", () => geminiWs.close());
+    geminiWs.on("close", (code, reason) => {
+        const reasonStr = reason && reason.length > 0
+            ? (Buffer.isBuffer(reason) ? reason.toString("utf8") : String(reason))
+            : `code ${code}`;
+        console.log("[Gemini Live] Closed:", code, reasonStr);
+        onClose();
+        if (code !== 1000 && reasonStr && reasonStr !== `code ${code}`) {
+            onError?.(reasonStr);
+        }
+    });
+    geminiWs.on("error", (err) => {
+        console.error("[Gemini Live] WebSocket error:", err.message);
+        onError?.(err.message || "Gemini connection error");
+        geminiWs.close();
+    });
     return geminiWs;
 }
 export function sendToGemini(geminiWs, payload) {

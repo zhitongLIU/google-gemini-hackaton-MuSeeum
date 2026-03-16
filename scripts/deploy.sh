@@ -46,28 +46,9 @@ if ! gcloud artifacts repositories describe "$AR_REPO" --location="$REGION" --pr
     --project="$PROJECT_ID"
 fi
 
-# Build substitution args
+# Build substitution args (region, repo, service names only; secrets come from Secret Manager)
 SUBST="_REGION=$REGION,_AR_REPO=$AR_REPO,_API_SERVICE_NAME=$API_SERVICE_NAME,_FRONTEND_SERVICE_NAME=$FRONTEND_SERVICE_NAME"
-if [ -n "$GEMINI_API_KEY" ]; then
-  SUBST="$SUBST,_GEMINI_API_KEY=$GEMINI_API_KEY"
-  echo "Using GEMINI_API_KEY from environment (or .env)"
-else
-  echo "No GEMINI_API_KEY set. Backend Live API will fail until you set the secret or pass the key."
-  echo "  Option 1: GEMINI_API_KEY=your_key $0"
-  echo "  Option 2: Create Secret Manager secret 'gemini-api-key' and update cloudbuild.yaml to use --set-secrets"
-fi
-if [ -n "$MUSEEUM_APP_ID" ]; then
-  SUBST="$SUBST,_MUSEEUM_APP_ID=$MUSEEUM_APP_ID"
-  echo "Using MUSEEUM_APP_ID (only museeum-web will be able to call the API)"
-else
-  echo "No MUSEEUM_APP_ID set. Any client can call the API. Set MUSEEUM_APP_ID (and VITE_MUSEEUM_APP_ID for the frontend build) to restrict to museeum-web."
-fi
-if [ -n "$JUDGE_ACCESS_CODE" ]; then
-  SUBST="$SUBST,_JUDGE_ACCESS_CODE=$JUDGE_ACCESS_CODE"
-  echo "Using JUDGE_ACCESS_CODE (only users with this code can use the app)"
-else
-  echo "No JUDGE_ACCESS_CODE set. Anyone can use the app. Set JUDGE_ACCESS_CODE to restrict to judges/organizers."
-fi
+echo "Secrets (GEMINI_API_KEY, MUSEEUM_APP_ID, JUDGE_ACCESS_CODE) are read from Secret Manager (gemini-api-key, museeum-app-id, judge-access-code)."
 
 echo ""
 echo "Submitting Cloud Build..."

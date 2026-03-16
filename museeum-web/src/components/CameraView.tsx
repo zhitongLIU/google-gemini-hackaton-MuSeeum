@@ -63,7 +63,7 @@ export function CameraView({
 
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[50vh] gap-4 p-4 bg-black/80 text-white rounded-lg">
+      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4 p-4 bg-black/80 text-white rounded-lg w-full max-w-[320px]">
         <p className="text-center">{error}</p>
         <button
           type="button"
@@ -77,7 +77,7 @@ export function CameraView({
   }
 
   return (
-    <div className="relative w-full aspect-[4/3] max-h-[70vh] bg-black rounded-lg overflow-hidden">
+    <div className="relative w-full max-w-[320px] h-[60vh] bg-black rounded-lg overflow-hidden">
       <video
         ref={videoRef}
         autoPlay

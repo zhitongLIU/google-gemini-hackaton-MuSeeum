@@ -19,9 +19,6 @@ substitutions:
   _FRONTEND_SERVICE_NAME: museeum-web
   _DEPLOY_BACKEND: 'true'
   _DEPLOY_FRONTEND: 'true'
-  _GEMINI_API_KEY: 'AIzaSyBfZZHveeKHpKKIY9vAbRj3m0gB0W8Smos'
-  _MUSEEUM_APP_ID: '972b9ec7-7b4c-47af-9ffe-e724a76a407e'
-  _JUDGE_ACCESS_CODE: 'hackathon2026a3ffc'
 
 steps:
   # ---------------------------------------------------------------------------
@@ -70,29 +67,15 @@ steps:
           echo "Skipping backend deploy"
           exit 0
         fi
-        ENV_VARS=""
-        if [ -n "${_GEMINI_API_KEY}" ]; then
-          ENV_VARS="$$ENV_VARS,GEMINI_API_KEY=${_GEMINI_API_KEY}"
-        fi
-        if [ -n "${_MUSEEUM_APP_ID}" ]; then
-          ENV_VARS="$$ENV_VARS,MUSEEUM_APP_ID=${_MUSEEUM_APP_ID}"
-        fi
-        if [ -n "${_JUDGE_ACCESS_CODE}" ]; then
-          ENV_VARS="$$ENV_VARS,JUDGE_ACCESS_CODE=${_JUDGE_ACCESS_CODE}"
-        fi
-        ENV_FLAG=""
-        [ -n "$$ENV_VARS" ] && ENV_FLAG="--set-env-vars $${ENV_VARS#,}"
         gcloud run deploy ${_API_SERVICE_NAME} \
           --image ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_API_SERVICE_NAME}:${BUILD_ID} \
           --region ${_REGION} \
           --platform managed \
           --allow-unauthenticated \
-          $$ENV_FLAG \
+          --set-secrets=GEMINI_API_KEY=gemini-api-key:latest,MUSEEUM_APP_ID=museeum-app-id:latest,JUDGE_ACCESS_CODE=judge-access-code:latest \
           --min-instances 0 \
           --max-instances 10 \
           --timeout 300s
-        # Optional: use Secret Manager instead of _GEMINI_API_KEY:
-        # --set-secrets=GEMINI_API_KEY=gemini-api-key:latest
 
   # ---------------------------------------------------------------------------
   # Get backend URL for frontend build
@@ -107,6 +90,15 @@ steps:
         if [ "${_DEPLOY_FRONTEND}" = "true" ]; then
           gcloud run services describe ${_API_SERVICE_NAME} --region ${_REGION} --format 'value(status.url)' > backend_url.txt
           echo "Backend URL: $(cat backend_url.txt)"
+          # Optionally load MUSEEUM_APP_ID for the frontend build from Secret Manager.
+          # If the secret "museeum-app-id" exists, read its latest version into app_id.txt.
+          if gcloud secrets describe museeum-app-id --project=${PROJECT_ID} >/dev/null 2>&1; then
+            gcloud secrets versions access latest --secret=museeum-app-id --project=${PROJECT_ID} > app_id.txt
+            echo "Loaded MUSEEUM_APP_ID from Secret Manager into app_id.txt"
+          else
+            echo "No 'museeum-app-id' secret found; frontend will be built without VITE_MUSEEUM_APP_ID"
+            : > app_id.txt
+          fi
         fi
 
   # ---------------------------------------------------------------------------
@@ -125,8 +117,11 @@ steps:
         fi
         VITE_API_URL=$$(cat backend_url.txt)
         BUILD_ARGS="--build-arg VITE_API_URL=$$VITE_API_URL"
-        if [ -n "${_MUSEEUM_APP_ID}" ]; then
-          BUILD_ARGS="$$BUILD_ARGS --build-arg VITE_MUSEEUM_APP_ID=${_MUSEEUM_APP_ID}"
+        if [ -s app_id.txt ]; then
+          APP_ID=$$(cat app_id.txt)
+          if [ -n "$$APP_ID" ]; then
+            BUILD_ARGS="$$BUILD_ARGS --build-arg VITE_MUSEEUM_APP_ID=$$APP_ID"
+          fi
         fi
         /usr/bin/docker build $$BUILD_ARGS \
           -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_FRONTEND_SERVICE_NAME}:${BUILD_ID} \

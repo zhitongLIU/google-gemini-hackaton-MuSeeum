@@ -5,13 +5,15 @@ import cors from "cors";
 import expressWs from "express-ws";
 import { requireAppId } from "./middleware/app-id.js";
 import { sessionRouter } from "./routes/session.js";
+import { artworkRouter } from "./routes/artwork.js";
 import { attachLiveWs } from "./routes/live.js";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 8080;
 
 app.use(cors({ origin: "*" }));
-app.use(express.json());
+// Allow larger payloads for artwork image uploads (base64 in JSON)
+app.use(express.json({ limit: "10mb" }));
 
 app.get("/health", (_req, res) => {
   res.json({ status: "ok" });
@@ -19,6 +21,7 @@ app.get("/health", (_req, res) => {
 
 app.use(requireAppId);
 app.use("/api", sessionRouter);
+app.use("/api", artworkRouter);
 
 expressWs(app);
 attachLiveWs(app);

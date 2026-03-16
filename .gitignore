@@ -11,3 +11,5 @@
 .groq/*
 .mistral/*
 .mosaic/*
+*/.env
+.env

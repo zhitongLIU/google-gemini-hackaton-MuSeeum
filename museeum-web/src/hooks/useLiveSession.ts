@@ -1,6 +1,16 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { store } from "../context/AppContext";
 
-const getWsUrl = (sessionId: string, accessCode?: string | null) => {
+type LiveMetadata = {
+  artworkId?: string | null;
+  artworkTitle?: string | null;
+  artworkArtist?: string | null;
+  artworkYear?: string | null;
+  artworkPeriod?: string | null;
+  artworkMuseumName?: string | null;
+};
+
+const getWsUrl = (sessionId: string, accessCode?: string | null, meta?: LiveMetadata) => {
   const base = import.meta.env.VITE_API_URL || "http://localhost:8080";
   const appId = import.meta.env.VITE_MUSEEUM_APP_ID;
   const wsProtocol = base.startsWith("https") ? "wss" : "ws";
@@ -9,6 +19,13 @@ const getWsUrl = (sessionId: string, accessCode?: string | null) => {
   const params = new URLSearchParams();
   if (appId) params.set("appId", appId);
   if (accessCode) params.set("accessCode", accessCode);
+  if (meta?.artworkId) params.set("artworkId", meta.artworkId);
+  if (meta?.artworkTitle) params.set("artworkTitle", meta.artworkTitle);
+  if (meta?.artworkArtist) params.set("artworkArtist", meta.artworkArtist);
+  if (meta?.artworkYear) params.set("artworkYear", meta.artworkYear);
+  if (meta?.artworkPeriod) params.set("artworkPeriod", meta.artworkPeriod);
+  if (meta?.artworkMuseumName) params.set("artworkMuseumName", meta.artworkMuseumName);
+
   const query = params.toString() ? `?${params.toString()}` : "";
   return `${wsProtocol}://${host}${path}${query}`;
 };
@@ -91,7 +108,18 @@ function stopAgentPlayback(
 
 type Status = "disconnected" | "connecting" | "ready" | "error";
 
-export function useLiveSession(sessionId: string | null, accessCode?: string | null) {
+export type UseLiveSessionOptions = {
+  /** When false, mic is not streamed (e.g. hold-to-speak: only stream while true). Default true. */
+  isRecording?: boolean;
+};
+
+export function useLiveSession(
+  sessionId: string | null,
+  accessCode?: string | null,
+  options?: UseLiveSessionOptions & { artworkId?: string | null }
+) {
+  const isRecording = options?.isRecording ?? true;
+  const artworkId = options?.artworkId ?? null;
   const [status, setStatus] = useState<Status>("disconnected");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [transcript, setTranscript] = useState("");
@@ -115,7 +143,22 @@ export function useLiveSession(sessionId: string | null, accessCode?: string | n
     setStatus("connecting");
     setErrorMessage(null);
     readyRef.current = false;
-    const url = getWsUrl(sessionId, accessCode);
+
+    const artwork = artworkId ? store.getArtwork(artworkId) : undefined;
+    const url = getWsUrl(
+      sessionId,
+      accessCode,
+      artwork
+        ? {
+            artworkId,
+            artworkTitle: artwork.title,
+            artworkArtist: artwork.artist,
+            artworkYear: artwork.year,
+            artworkPeriod: artwork.period,
+            artworkMuseumName: artwork.museumName,
+          }
+        : { artworkId }
+    );
     const ws = new WebSocket(url);
     wsRef.current = ws;
 
@@ -157,12 +200,18 @@ export function useLiveSession(sessionId: string | null, accessCode?: string | n
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       window.clearTimeout(timeout);
       wsRef.current = null;
       if (!readyRef.current) {
         setStatus("error");
-        setErrorMessage("Connection closed. Is the backend running? Use VITE_API_URL if it runs on a different port (e.g. 3080).");
+        if (event.reason) {
+          setErrorMessage(event.reason);
+        } else {
+          setErrorMessage(
+            "Connection closed. Is the backend running? Use VITE_API_URL if it runs on a different port (e.g. 3080)."
+          );
+        }
       } else {
         setStatus("disconnected");
       }
@@ -178,7 +227,7 @@ export function useLiveSession(sessionId: string | null, accessCode?: string | n
       ws.close();
       wsRef.current = null;
     };
-  }, [sessionId, accessCode]);
+  }, [sessionId, accessCode, artworkId]);
 
   const sendJson = useCallback((payload: object) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -195,9 +244,9 @@ export function useLiveSession(sessionId: string | null, accessCode?: string | n
     [sendJson]
   );
 
-  // Always-on mic: stream raw PCM to the Live Agent over the same WebSocket (continuous connection)
+  // Mic: stream raw PCM when ready and (when isRecording is false, only when explicitly recording)
   useEffect(() => {
-    if (status !== "ready") {
+    if (status !== "ready" || !isRecording) {
       processorRef.current?.disconnect();
       processorRef.current = null;
       captureContextRef.current?.close();
@@ -257,7 +306,18 @@ export function useLiveSession(sessionId: string | null, accessCode?: string | n
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     };
-  }, [status, sendJson]);
+  }, [status, isRecording, sendJson]);
+
+  // Ensure any ongoing agent audio playback is stopped when the hook unmounts
+  useEffect(() => {
+    return () => {
+      stopAgentPlayback(audioContextRef, audioNextStartTimeRef, playingSourcesRef);
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
+        audioContextRef.current = null;
+      }
+    };
+  }, []);
 
   return {
     status,

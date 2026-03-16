@@ -1,6 +1,6 @@
 # MuSeeum – PRD (Cursor-friendly)
 
-> **Quick reference:** AI museum companion. Artwork analysis is **two-phase**: (1) **Art Info Agent** (Gemini + Google Search/Wikipedia grounding) finds artist, museum, date; (2) **Docent Agent** describes and presents the work after user confirmation or 5s timeout. During visit: Live Agent (camera + voice) for Q&A. After visit: Gemini generates a personalized tour story. Stack: React/TS frontend, Node/TS backend on Cloud Run, **Google Drive (folders + index.json)**, Gemini Live API + GenAI SDK/ADK, Google Sign-In (Drive scope).
+> **Quick reference:** AI museum companion. Artwork analysis is **two-phase**: (1) **Art Info Agent** (Gemini + Google Search/Wikipedia grounding) finds artist, museum, date; (2) **Docent Agent** describes and presents the work after user confirmation or 5s timeout. During visit: Live Agent (camera + voice) for Q&A. After visit: Gemini generates a personalized tour story. Stack: React/TS frontend, Node/TS backend on Cloud Run, **localStorage in the webapp** (hackathon; no Google Drive), Gemini Live API + GenAI SDK/ADK. **No login implementation;** access code only (judge/organizer). WebSocket `/api/live/:sessionId` is already built.
 
 ---
 
@@ -25,16 +25,16 @@
 | ------------ | ---------------------------------------------------------------------------------------------------------------------------- |
 | **Frontend** | React SPA, TypeScript, browser (desktop + mobile), camera + mic                                                              |
 | **Backend**  | Node.js (TypeScript), Express or Fastify, Cloud Run (scale-to-zero)                                                          |
-| **DB**       | **Google Drive**: `index.json` in an app folder (sessions, artworks, summaries, temp entries)                               |
-| **Storage**  | **Google Drive**: images saved as files in per-visit subfolders                                                              |
-| **Auth**     | **Optional** Google OAuth (Google Identity Services) with Drive scope; backend validates **access tokens** via Google userinfo. Guest mode stores data locally in sessionStorage + cookies. |
+| **DB**       | **Local storage in the webapp** (hackathon): sessions, artworks, photos, and summaries stored in **localStorage** (frontend). Backend remains stateless for persistence (in-memory session id for Live WebSocket only). |
+| **Storage**  | **Local storage**: images (base64) and all visit data stored in the webapp’s localStorage under a single key (e.g. `museeum_data`). No server-side persistence. |
+| **Auth**     | **No login implementation.** Access code only (judge/organizer code); no Google Sign-In or Drive scope. Backend validates access code on `POST /session` and WebSocket. |
 | **AI**       | **Two agents:** (1) **Art Info Agent** — Gemini + grounding (Google Search and/or Wikipedia) to find artist, museum, date of production; returns candidate for confirmation. (2) **Docent Agent** — Gemini (text, optionally Live) for visitor-friendly description and museum-docent presentation; runs after confirmation or 5s timeout. GenAI SDK/ADK; standard Gemini text for end-of-tour story. |
 
 **Grounding:** The Art Info Agent uses Google Search and/or Wikipedia to ground artwork metadata (artist, museum, date); no fabrication of museum/artist/date. The Docent Agent uses the confirmed art info and does not fabricate facts.
 
 **Repositories:** Backend and frontend live in **separate Git repositories** (both public on GitHub):
 
-- **Backend:** `museeum-api` – Node/TS API, Cloud Run, Google Drive, Gemini.
+- **Backend:** `museeum-api` – Node/TS API, Cloud Run, Gemini (no Drive; stateless for artwork/summary).
 - **Frontend:** `museeum-web` – React/TS SPA, camera + mic, calls backend API and Live WebSocket.
 
 **Note:** Museum is **discovered by the Art Info Agent** via grounding (Google Search/Wikipedia), not asked up front. When the user taps “Take a Photo” or “Upload from Gallery”, we do **not** ask for museum location; the agent finds it from the artwork image. Optional: user can set or correct museum later (e.g. Edit Museum).
@@ -46,7 +46,7 @@ MuSeeum’s front/back/agent communication and Google Cloud deployment follow pa
 | Component | Way Back Home | MuSeeum analogue |
 | --------- | ------------- | ----------------- |
 | **Frontend** | `way-back-home/dashboard/frontend` (Next.js) | `museeum-web` (React/TS SPA) |
-| **Backend** | `way-back-home/dashboard/backend` (FastAPI, Firestore, Firebase Storage) | `museeum-api` (Node/TS, Google Drive `index.json`) |
+| **Backend** | `way-back-home/dashboard/backend` (FastAPI, Firestore, Firebase Storage) | `museeum-api` (Node/TS, stateless; frontend uses localStorage) |
 | **Agent (orchestrator)** | `way-back-home/solutions/level_1/agent` (ADK root agent + sub-agents) | Art Info Agent + Docent Agent (invoked by backend per request) |
 | **Level 0 / setup** | `way-back-home/solutions/level_0` (generator script, e.g. avatar) | One-time or per-session setup; no separate “level_0” service |
 | **Tool / MCP server** | `way-back-home/solutions/level_1/mcp-server` (FastMCP on Cloud Run) | Optional: custom tools or MCP if needed; Gemini + grounding is primary |
@@ -69,44 +69,39 @@ MuSeeum’s front/back/agent communication and Google Cloud deployment follow pa
 
 - **Frontend** talks only to **backend** (REST + WebSocket for Live). Same single-API pattern; no agent URLs in the client.
 - **Backend** owns all HTTP entrypoints. It **invokes** Art Info Agent and Docent Agent in-process (or via serverless) on `POST /session/:id/artwork` and `POST /session/:id/artwork/confirm`. No A2A required unless we introduce separate agent services later.
-- **Backend** is the only service that talks to Gemini (grounding, Live, text), Drive, and (optionally) any MCP or tool service. Env: `GOOGLE_CLOUD_PROJECT`, Drive credentials, Gemini API, `API_BASE_URL` for CORS and callbacks.
+- **Backend** is the only service that talks to Gemini (grounding, Live, text). Env: `GOOGLE_CLOUD_PROJECT`, Gemini API, `API_BASE_URL` for CORS. Listing and full session/artwork data come from **frontend localStorage**; backend exposes stateless `POST /session/:id/artwork` and `POST /session/:id/artwork/confirm` returning candidate and explanation only.
 - **Deployment on Google Cloud:** Backend and frontend each have a Dockerfile and deploy to Cloud Run (or frontend to a static host). Use Cloud Build or GitHub Actions; same env and secret handling as Way Back Home (env vars, Secret Manager if needed).
 
 ---
 
 ## 3. API reference (backend)
 
-All endpoints require auth (Google **access token** with Drive scope). Base path: `/api`.
+Access control: **access code** (judge/organizer) sent in body or header; required when `JUDGE_ACCESS_CODE` is set. Base path: `/api`. **Listing and full session/artwork data come from frontend localStorage**; no `GET /session` or `GET /session/:id` required for persistence.
 
-| Method | Path                                     | Body / params            | Response / action                                                                                                                             |
-| ------ | ---------------------------------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| POST   | `/session`                               | `{ museumName?: string }` | Create session → `{ sessionId }`. Museum optional; when user takes/uploads photo without setting museum, create with no museum (or placeholder); Art Info Agent returns museum in candidate. |
-| GET    | `/session`                               | —                        | List sessions for user (minimal + has summary?)                                                                                               |
-| GET    | `/session/:id`                           | —                        | Session details + summary if present                                                                                                          |
-| POST   | `/session/:id/artwork`                   | `{ image: file \| base64, notes?: string, museumName?: string }`                                                                              | **Agent 1 only.** Art Info Agent (Gemini + Google Search/Wiki grounding) → return **candidate** (title, artist, museum, date, period, confidence) for confirmation; no full explanation yet. |
-| POST   | `/session/:id/artwork/confirm`           | `{ tempId?, title, artist?, period?, year?, correctedTitle?, museumName? }`                                                                   | **Agent 2.** On user confirm (or 5s auto-confirm): Docent Agent generates full explanation and museum-docent presentation → save artwork event → return `{ artworkId, title, artist, explanationText, sections?, ... }`. |
-| POST   | `/session/:id/artwork/:artworkId/photos` | `{ image: file           | base64 }`                                                                                                                                     | Add photo to same piece → `{ artworkId, imageUrls }`                                                                |
-| WS     | `/live/:sessionId`                       | —                        | WebSocket: user audio ↔ Gemini Live ↔ streaming text/audio. Server injects current artwork context (when available) into Gemini Live session. |
-| POST   | `/session/:id/summary`                   | —                        | Mark session completed, generate story → `{ summaryText, sections }`                                                                          |
+| Method | Path                                     | Body / params            | Response / action                                                                                                                                 |
+| ------ | ---------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| POST   | `/session`                               | `{ museumName?: string, accessCode?: string }` | Create session → `{ sessionId }`. Used for Live WebSocket; frontend stores session in localStorage. Museum optional; Art Info Agent returns museum in candidate. |
+| POST   | `/session/:id/artwork`                   | `{ image: base64, notes?: string }` | **Stateless. Agent 1 only.** Art Info Agent (Gemini + Google Search/Wiki grounding) → return **candidate** (title, artist, museum?, year?, period, confidence). No server-side storage. |
+| POST   | `/session/:id/artwork/confirm`           | `{ title, artist?, period?, year?, museumName?, correctedTitle? }` | **Stateless. Agent 2.** Docent Agent → return `{ artworkId, title, artist, explanationText, sections?, tags? }`. Frontend saves to localStorage. |
+| POST   | `/session/:id/artwork/:artworkId/photos` | `{ image: base64 }`      | Optional: add photo to same piece → return updated image list. Frontend persists in localStorage. |
+| WS     | `/live/:sessionId`                       | query: `accessCode`, `appId` | WebSocket: user audio ↔ Gemini Live ↔ streaming text/audio. **Already built.** |
+| POST   | `/session/:id/summary`                   | `{ artworks: [...] }` (optional) | Stateless: generate story from artwork list → `{ summaryText, sections }`. Frontend stores summary in localStorage. |
 
 ---
 
-## 4. Data model (Google Drive)
+## 4. Data model
 
-**Drive structure (per user):**
+### 4.1 Hackathon: localStorage (webapp)
 
-- **App folder**: `MuSeeum/` (created in the user’s Google Drive root)
-- **Index file**: `MuSeeum/index.json` — single source of truth “database”
-- **Visit folders**: `MuSeeum/<sessionId>-<museumName>/` — images stored as files
+For this hackathon, **all sessions, artworks, photos, and summaries** are stored in the **webapp’s localStorage** under a single key (e.g. `museeum_data`). No Google Drive; no server-side persistence of visit data.
 
-**`index.json` shape (example):**
+**Stored object shape (example):**
 
 ```
 {
   "version": 1,
-  "user": { "id": "googleUserId", "name": "Name", "email": "user@email.com" },
   "sessions": [
-    { "id": "...", "userId": "...", "museumName": "...", "startedAt": "...", "endedAt": null, "status": "active", "folderId": "driveFolderId" }
+    { "id": "...", "museumName": "...", "startedAt": "...", "endedAt": null, "status": "active" }
   ],
   "artworks": [
     {
@@ -114,50 +109,41 @@ All endpoints require auth (Google **access token** with Drive scope). Base path
       "sessionId": "...",
       "createdAt": "...",
       "photos": ["data:image/jpeg;base64,..."],
-      "photoFileIds": ["driveFileId"],
       "title": "...",
       "artist": "...",
       "period": "...",
       "year": "...",
+      "museumName": "...",
       "explanationText": "...",
       "tags": [],
       "sections": {},
-      "confirmationSource": "auto",
+      "confirmationSource": "auto" | "voice" | "typed",
       "liked": false,
-      "confirmed": true
+      "confirmed": true,
+      "candidate": { "title", "artist", "museum?", "year?", "period", "confidence" }
     }
   ],
   "summaries": [
-    { "sessionId": "...", "summaryText": "...", "sections": [], "createdAt": "..." }
-  ],
-  "tempArtworks": [
-    { "id": "...", "sessionId": "...", "imageBase64": "...", "mimeType": "image/jpeg", "expiresAt": "..." }
+    { "sessionId": "...", "summaryText": "...", "sections": [{ "artworkTitle", "artist?", "shortStory" }], "createdAt": "..." }
   ]
 }
 ```
 
-Images are stored **as Drive files** in the visit folder; the index keeps a lightweight list of Drive file IDs and a base64 preview for quick UI rendering.
-
-**Guest mode (no sign-in):**
-
-- All sessions/artworks/summaries are stored in **`sessionStorage`**.
-- A session cookie `museeum.guest=1` marks guest usage for analytics/debug.
-- Data is ephemeral and cleared when the browser session ends.
+Images are stored as **base64 data URLs** in each artwork’s `photos` array. The backend does not store this data; it only returns AI results (candidate, explanation, summary) per request.
 
 ---
 
 ## 5. User flows (implementation order)
 
-### 5.1 Sign in & start visit
+### 5.1 Start visit (no login)
 
-1. User opens app → optionally signs in with Google (guest mode allowed).
+1. User opens app → if required, enter **access code** (judge/organizer); no login or Google Sign-In.
 2. **VisitHome:** “Start new museum visit” or go straight to capture: **museum is not asked** when user taps “Take a Photo” or “Upload from Gallery”; the Art Info Agent discovers museum from the first artwork.
-3. When user first captures an artwork (photo or upload), frontend creates a session: `POST /api/session` with `{ museumName }` optional (omit or use placeholder like “To be identified”). Backend returns `sessionId`.
-4. Backend (signed-in): create session in **Drive `index.json`** and a visit subfolder → return `sessionId`. Museum name can be updated later from the Art Info Agent candidate or via Edit Museum.
-5. Guest mode: session stored in **sessionStorage** and a guest cookie.
-6. Session = tour diary for that visit (all artworks/explanations tied to it). Sessions are **resumable**: from VisitHome, the user can open an existing **active** session and continue (capture more artworks, use Live Q&A, then End visit).
+3. When user first captures an artwork (photo or upload), frontend creates a session: `POST /api/session` (with access code); backend returns `sessionId`. Frontend stores the new session in **localStorage** and uses `sessionId` for Live WebSocket and artwork API calls.
+4. Museum name can be updated later from the Art Info Agent candidate or via Edit Museum (stored in localStorage).
+5. Session = tour diary for that visit (all artworks/explanations stored in localStorage). Sessions are **resumable**: from VisitHome, the user can open an existing **active** session and continue (capture more artworks, use Live Q&A, then End visit).
 
-**Done when:** LoginPage → VisitHome → (optional) start visit → or tap Take Photo/Upload → session created on first capture without museum prompt → sessionId in state/URL.
+**Done when:** Access code (if required) → VisitHome → or tap Take Photo/Upload → session created on first capture → sessionId in state/URL and localStorage.
 
 ---
 
@@ -175,8 +161,8 @@ Images are stored **as Drive files** in the visit folder; the index keeps a ligh
 **Phase 2 — Docent description (Agent 2)**
 
 7. On confirm (or 5s timeout): Frontend calls `POST /api/session/:id/artwork/confirm` with candidate or user-corrected title (and optional artist, period, year, museumName).
-8. Backend: **Docent Agent** uses Gemini to generate visitor-friendly description and museum-docent presentation (style, history, artist, period, short summary). Saves image to Drive (signed-in) or in-memory (guest), updates `index.json` / sessionStorage with `artwork_event`.
-9. Backend returns `{ artworkId, title, artist, explanationText, sections?, tags?, ... }`; frontend shows **Artwork Analysis (vE9pj)**.
+8. Backend: **Docent Agent** uses Gemini to generate visitor-friendly description and museum-docent presentation (style, history, artist, period, short summary). Returns result only; **frontend** saves the artwork (including images) to **localStorage** and shows **Artwork Analysis (vE9pj)**.
+9. Backend returns `{ artworkId, title, artist, explanationText, sections?, tags?, ... }`; frontend persists to localStorage and shows **Artwork Analysis (vE9pj)**.
 10. Option: “Add more photos” → `POST /api/session/:id/artwork/:artworkId/photos`.
 
 - **No / I’ll type it myself:** User enters title; frontend sends corrected title to confirm endpoint → Docent Agent still runs with user-provided title and creates `artwork_event`.
@@ -202,10 +188,9 @@ Flow detail: [docs/flow-museum-tour-diary.md](docs/flow-museum-tour-diary.md).
 ### 5.4 End visit & generate story
 
 1. User taps “End Visit”.
-2. Frontend: `POST /api/session/:id/summary`.
-3. Backend: set `session.status = 'completed'`, `endedAt`; load all `artwork_events`; call Gemini text with prompt + list of artworks (titles, artists, snippets, timestamps) → story with at least: intro paragraph, array of sections (artworkTitle, artist, shortStory), closing paragraph.
-4. Store in `summaries`: `{ sessionId, summaryText, sections, createdAt }`; return to frontend.
-5. **VisitSummary:** show story; **downloadable diary** (see export formats below) + optional “Copy text”.
+2. Frontend: optionally `POST /api/session/:id/summary` with artworks from localStorage; backend returns `{ summaryText, sections }` (stateless).
+3. Frontend: set `session.status = 'completed'`, `endedAt` in localStorage; store summary in localStorage.
+4. **VisitSummary:** show story; **downloadable diary** (see export formats below) built from **localStorage** + optional “Copy text”.
 
 **Done when:** End visit → summary generated → VisitSummary screen shows intro/sections/closing + user can download diary.
 
@@ -220,7 +205,7 @@ When the visit ends, the user gets a **downloadable diary** built from: session 
 | **HTML (single file)** | Opens in any browser; embedded artwork images (base64 or URLs) **required** per artwork when captured; presentable in demo; user can “Print → Save as PDF” if desired. | Template + image embedding.                             |
 | **PDF**                | Universal, printable, booklet-style. Strong for submission and sharing.                                                                                                | Requires a lib (e.g. jsPDF, react-pdf, or server-side). |
 
-**Implementation:** Build diary content from `GET /api/session/:id` (session + summary + artworkEvents). VisitSummary offers two actions: **“Download as HTML”** and **“Download as PDF”**. Frontend (or a small backend endpoint) assembles the chosen format and triggers download. HTML can be generated first (template + inline CSS); PDF via client lib (e.g. jsPDF) or by rendering the same content and calling print-to-PDF.
+**Implementation:** Build diary content from **localStorage** (session + summary + artworks for that session). VisitSummary offers two actions: **“Download as HTML”** and **“Download as PDF”**. Frontend assembles the chosen format and triggers download. HTML: template + inline CSS + embedded base64 images; PDF via client lib (e.g. jsPDF) or print-to-PDF.
 
 ---
 
@@ -228,8 +213,8 @@ When the visit ends, the user gets a **downloadable diary** built from: session 
 
 | Page / area            | Responsibility                                                                                                                                                                                                                                                                                 |
 | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **LoginPage**          | Google OAuth (Drive scope); on success store access token, redirect to VisitHome                                                                                                                                                                                                              |
-| **VisitHome**          | “Start museum visit” (museum not asked when user taps Take Photo/Upload — agent finds it); list previous sessions (museum, date, view summary); `GET /api/session`. List shows active and completed sessions; user can **Continue** an active session (navigate to LiveVisit with that sessionId) or **View summary** for completed ones. |
+| **Access code gate**   | Optional full-screen form when judge access code is required; on submit store code, then show VisitHome. No login or Google OAuth.                                                                                                                                                            |
+| **VisitHome**          | “Start museum visit” (museum not asked when user taps Take Photo/Upload — agent finds it); list previous sessions from **localStorage** (museum, date, view summary). List shows active and completed sessions; user can **Continue** an active session or **View summary** for completed ones. |
 | **LiveIdentification** | `XLRyj`                                                                                                                                                                                                                                                                                        | Dark immersive UI; captured photo + AI waveform indicator + real-time voice transcript; **push-to-talk mic** for voice confirmation via Gemini Live Agent (interruptible); "Or type it myself" text fallback. Gate before Artwork Analysis. |
 | **LiveVisit**          | _(not prototyped)_                                                                                                                                                                                                                                                                             | Session info (museum, diary); camera + "Capture artwork"; "Talk" (voice); last explanation + transcript (explanation playback via **Gemini streaming audio**); "End visit"; toasts for errors                                               |
 | **VisitSummary**       | _(not prototyped)_                                                                                                                                                                                                                                                                             | Intro, per-artwork sections, closing; **downloadable diary** (Download as **HTML** or **PDF**); optional copy text                                                                                                                          |
@@ -240,20 +225,18 @@ When the visit ends, the user gets a **downloadable diary** built from: session 
 
 ## 7. Backend (Node/TS) – endpoints checklist
 
-- `POST /api/session` – body `{ museumName? }` (optional) → create session → `{ sessionId }`. Omit museum when user goes via Take Photo/Upload; Art Info Agent returns museum in candidate.
-- `GET /api/session` – list user sessions (include active sessions so user can resume)
-- `GET /api/session/:id` – session + summary if present (enough data to resume active session)
-- `POST /api/session/:id/artwork` – image → **Art Info Agent** (Gemini + Google Search/Wiki grounding) → return **candidate** for confirmation (includes **museum** discovered by agent). No docent text yet. Do not require museum from user.
-- `POST /api/session/:id/artwork/confirm` – candidate or user title → **Docent Agent** → full explanation + artwork event. If user does not respond within 5s, frontend may treat as confirm and call this endpoint automatically.
-- `POST /api/session/:id/artwork/:artworkId/photos` – add photo to same piece (also used for merge)
-- `WS /api/live/:sessionId` – Live Agent audio streaming
-- `POST /api/session/:id/summary` – complete session, generate and store story → `{ summaryText, sections }`
+- `POST /api/session` – body `{ museumName?, accessCode? }` → create session → `{ sessionId }`. Used for Live WebSocket; frontend stores session in localStorage.
+- `POST /api/session/:id/artwork` – image (base64) → **Art Info Agent** (Gemini + Google Search/Wiki grounding) → return **candidate** (stateless). No server-side storage.
+- `POST /api/session/:id/artwork/confirm` – body with title, artist?, etc. → **Docent Agent** → return explanation (stateless). Frontend saves to localStorage.
+- `POST /api/session/:id/artwork/:artworkId/photos` – optional; add photo → return image list. Frontend persists in localStorage.
+- `WS /api/live/:sessionId` – Live Agent audio streaming (already built).
+- `POST /api/session/:id/summary` – optional; body with artworks → generate story → `{ summaryText, sections }` (stateless). Frontend stores summary in localStorage.
 
 ---
 
 ## 8. Non-functional & cost
 
-- **Cost:** Cloud Run min instances = 0, small CPU/RAM; Drive storage on the user’s account; no extra always-on services.
+- **Cost:** Cloud Run min instances = 0, small CPU/RAM; no server-side storage (localStorage in webapp); no extra always-on services.
 - **Simplicity:** Clear errors; Cloud Logging for API and Gemini.
 - **Latency:** Streaming from Gemini Live for voice; “good enough” latency.
 
@@ -261,10 +244,10 @@ When the visit ends, the user gets a **downloadable diary** built from: session 
 
 ## 9. Rule compliance & judging
 
-- **Rules:** New project, contest period; Live Agents category; Gemini + GenAI SDK/ADK; Cloud Run + Google Drive; UI and video in English.
+- **Rules:** New project, contest period; Live Agents category; Gemini + GenAI SDK/ADK; Cloud Run; UI and video in English.
 - **Innovation & UX (40%):** Real-time speech + vision; Live Agent has a defined **persona/voice** (see §1.1 Persona); **barge-in** supported (release Talk = interrupt); minimal UI (camera, talk button, spoken feedback).
-- **Technical (30%):** Clear layers (React, Node, Gemini, Drive); **Grounding:** art metadata (artist, museum, date) is grounded via Google Search and/or Wikipedia in the Art Info Agent; Docent Agent uses confirmed info and does not fabricate facts; clean APIs and data model.
-- **Demo (30%):** Happy path ~60–90 s: Login → Start visit → Capture 1–2 artworks → One voice question → End visit → Story. Optional “About / Architecture” in app.
+- **Technical (30%):** Clear layers (React, Node, Gemini, localStorage); **Grounding:** art metadata (artist, museum, date) is grounded via Google Search and/or Wikipedia in the Art Info Agent; Docent Agent uses confirmed info and does not fabricate facts; clean APIs and data model.
+- **Demo (30%):** Happy path ~60–90 s: Access code (if required) → Start visit → Capture 1–2 artworks → One voice question → End visit → Story. Optional “About / Architecture” in app.
 
 **Extra:** CI/CD for deployment automation; README note for optional “how MuSeeum uses Gemini Live + GCP” content. **Proof of GCP:** Backend on Cloud Run; include short screen recording (e.g. Cloud Run dashboard or live API URL) or code pointer per hackathon rules.
 
@@ -301,8 +284,8 @@ To qualify, the submission must include (per [docs/rules.md](docs/rules.md) and 
 ## 11. Deliverables (for coding agent)
 
 - **Repositories:** Backend in **`museeum-api`**, frontend in **`museeum-web`** (separate Git repos, both public on GitHub).
-- Backend Node/TS: all endpoints, Google Drive storage, Gemini (Live + text).
-- React/TS frontend: LoginPage, VisitHome, LiveVisit, VisitSummary; camera + audio + basic styling.
+- Backend Node/TS: session, artwork, confirm, optional summary endpoints; Gemini (Live + text). No server-side persistence; **access code only** (no login).
+- React/TS frontend: Access code gate, VisitHome, Live Identification, Artwork Analysis, Museum Gallery Grid, VisitSummary, Favorites, Collection Stats; **localStorage** for sessions/artworks/photos; camera + audio + basic styling.
 - Backend Dockerfile; frontend build config.
 - CI/CD (cloudbuild.yaml or GitHub Actions) for Cloud Run (backend); Vercel (or static host) deploy for frontend.
 - README.md in each repo: setup and deployment for that repo; how to run with the other.
@@ -318,7 +301,7 @@ To qualify, the submission must include (per [docs/rules.md](docs/rules.md) and 
 - **@implementation.md** – screen-by-screen Pencil node IDs, navigation flows, interactive elements, design tokens. Use as the single source of truth for UI implementation.
 - **Prototype:** `muSeeum.pen` – Pencil file with all 11 screens + 11 navigation-note annotations. Read via Pencil MCP tools only.
 - **APIs:** Section 3 is the single source of truth for routes and payloads.
-- **Data:** Section 4 is the single source for Drive folder + index.json structure.
+- **Data:** Section 4 is the single source for localStorage structure (hackathon).
 - **Order:** Implement flows in order 5.1 → 5.2 → 5.3 → 5.4; backend endpoints and frontend pages can be built in parallel per flow.
 - **Two-agent artwork flow:** **Agent 1 (Art Info):** vision + Google Search/Wikipedia grounding → artist, museum, date, period, title → candidate for confirmation. **Agent 2 (Docent):** after user confirm or 5s timeout → visitor-friendly description and museum-docent presentation. Implement on `XLRyj` (Live Identification): show Art Info result, then confirm by voice (push-to-talk) or "Or type it myself"; if no response within 5s, treat as confirmed and call confirm endpoint. Support merge for duplicate photos of same artwork.
 - **Live Agent:** One WebSocket per session; maintain context for sessionId; support interrupt (release Talk).

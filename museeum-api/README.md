@@ -1,65 +1,56 @@
 # MuSeeum API
 
-Backend for the MuSeeum MVP: session creation and Gemini Live WebSocket bridge.
+Backend for MuSeeum: session creation, Art Info Agent (vision + grounding), Docent Agent (description), optional summary generation, and Gemini Live WebSocket bridge.
+
+**Hackathon setup:** No server-side persistence. Sessions are in-memory for Live WebSocket; all visit data (sessions, artworks, summaries) is stored in the **frontend’s localStorage**. Access control is **access code only** (no login).
 
 ## Run locally
 
 ```bash
 npm install
 cp .env.example .env
-# Set GEMINI_API_KEY in .env (required for Live Agent)
+# Set GEMINI_API_KEY in .env (required for Live and agents)
 npm run dev
 ```
 
 Server listens on `http://localhost:8080` (or `PORT` from env).
-
-## Fix: "Live Agent connection closed before ready"
-
-If the app shows this error, do the following:
-
-1. **Get a Gemini API key**
-   - Open [Google AI Studio → API keys](https://aistudio.google.com/app/apikey).
-   - Sign in with your Google account.
-   - Click **Create API key** (create a project if prompted).
-   - Copy the key.
-
-2. **Enable Live API access**
-   - Try the Live API once in the browser: [Google AI Studio → Live](https://aistudio.google.com/live). That helps ensure your account can use the Live API.
-   - The same API key from step 1 is used for the WebSocket Live API.
-
-3. **Configure the backend**
-   - In `museeum-api/.env` set:
-     ```env
-     GEMINI_API_KEY=your_pasted_key_here
-     ```
-   - Restart the API (`npm run dev` in `museeum-api`).
-
-4. **If it still fails**
-   - Confirm the key has no extra spaces or quotes in `.env`.
-   - **Watch the backend terminal** when you connect from the app. You should see `[Gemini Live] Connected, sending setup...` then either `[Gemini Live] setupComplete received` or `[Gemini Live] Error from API:` / `[Gemini Live] Closed: <code> <reason>`. The reason/code is the actual error from Google.
-   - Try a different Live model by adding to `.env`:
-     ```env
-     GEMINI_LIVE_MODEL=gemini-2.0-flash-exp
-     ```
-     Then restart the API. Some keys or regions may not have `gemini-2.5-flash-native-audio-preview-12-2025`.
-   - Use a key from [aistudio.google.com](https://aistudio.google.com/app/apikey) (not a Vertex AI–only key).
 
 ## Env vars
 
 | Var | Description |
 |-----|-------------|
 | `PORT` | HTTP port (default: 8080) |
-| `GEMINI_API_KEY` | Google AI API key for Gemini Live (required for `/api/live`) |
+| `GEMINI_API_KEY` | Google AI API key for Gemini (required for Live and Art Info/Docent/summary) |
+| `GEMINI_LIVE_MODEL` | Optional; Live model (default: gemini-2.5-flash-native-audio-preview-12-2025) |
+| `GEMINI_ART_MODEL` | Optional; model for Art Info/Docent/summary (default: gemini-2.5-flash) |
+| `JUDGE_ACCESS_CODE` | Optional; when set, required in body or header for session, artwork, summary, and WS |
+| `MUSEEUM_APP_ID` | Optional; when set, clients must send `X-Museeum-App-Id` header |
 
 ## Endpoints
 
 - **GET /health** — `{ "status": "ok" }`
-- **POST /api/session** — body optional; returns `{ "sessionId": "<uuid>" }`
-- **WS /api/live/:sessionId** — WebSocket to the Live Agent. Send JSON:
-  - `{ "type": "audio", "data": "<base64>" }` — audio (PCM 16 kHz 16-bit LE preferred)
-  - `{ "type": "image", "data": "<base64>" }` — image for “describe this”
-  - `{ "type": "text", "data": "..." }` — text input  
-  Receive: `{ "type": "ready" }`, `{ "type": "text", "data": "..." }`, `{ "type": "audio", "data": "..." }`, `{ "type": "inputTranscript", "data": "..." }`
+- **POST /api/session** — body `{ "accessCode"?: string }`; returns `{ "sessionId": "<uuid>" }`. Used for Live WebSocket; frontend stores session in localStorage.
+- **POST /api/session/:id/artwork** — body `{ "image": "<base64>", "accessCode"?: string }`. Art Info Agent (Gemini + Google Search grounding) returns `{ "tempId", "candidate": { "title", "artist", "museum?", "year?", "period", "confidence" } }`. Stateless.
+- **POST /api/session/:id/artwork/confirm** — body `{ "title", "artist?", "period?", "year?", "museumName?", "accessCode"?: string }`. Docent Agent returns `{ "artworkId", "title", "artist", "explanationText", "sections?", "tags?" }`. Stateless.
+- **POST /api/session/:id/summary** — body `{ "artworks": [{ "title", "artist?", "explanationText?" }], "accessCode"?: string }`. Returns `{ "summaryText", "sections" }`. Stateless.
+- **WS /api/live/:sessionId** — WebSocket to Gemini Live. Query: `appId`, `accessCode`. Send JSON: `{ "type": "audio"|"image"|"text", "data": "..." }`. Receive: `ready`, `text`, `audio`, `inputTranscript`, `outputTranscript`, `error`.
+
+## Fix: "Art Info Agent failed: 404 ... model no longer available"
+
+The default model for Art Info/Docent/summary is `gemini-2.5-flash`. If you get a 404 (model not available for your key or region), set a different model in `.env`:
+
+```env
+GEMINI_ART_MODEL=gemini-2.5-flash-lite
+```
+
+Or try `gemini-2.5-pro` / another [available model](https://ai.google.dev/gemini-api/docs/models). Restart the API after changing.
+
+## Fix: "Live Agent connection closed before ready"
+
+1. Get a Gemini API key from [Google AI Studio → API keys](https://aistudio.google.com/app/apikey).
+2. Enable Live API: try [Google AI Studio → Live](https://aistudio.google.com/live) in the browser.
+3. Set `GEMINI_API_KEY=your_key` in `museeum-api/.env` and restart.
+4. If it still fails, try `GEMINI_LIVE_MODEL=gemini-2.0-flash-exp` in `.env` and restart.
 
 ## With frontend
 
@@ -67,15 +58,7 @@ Run the frontend with `VITE_API_URL=http://localhost:8080` (or your API base URL
 
 ## Deploy to Cloud Run
 
-From the **repository root** (parent of `museeum-api`):
+From the repository root:
 
-- **One-command deploy (backend + frontend):** `make deploy` or `./scripts/deploy.sh`. Set `GEMINI_API_KEY=xxx` or ensure Secret Manager secret `gemini-api-key` exists; see [docs/deploy-gcp.md](../docs/deploy-gcp.md).
-- **Backend only:** Build and push the image, then deploy:
-  ```bash
-  docker build -t us-central1-docker.pkg.dev/PROJECT_ID/museeum/museeum-api:latest ./museeum-api
-  docker push us-central1-docker.pkg.dev/PROJECT_ID/museeum/museeum-api:latest
-  gcloud run deploy museeum-api --image us-central1-docker.pkg.dev/PROJECT_ID/museeum/museeum-api:latest \
-    --region us-central1 --allow-unauthenticated \
-    --set-env-vars "GEMINI_API_KEY=xxx"
-  ```
-  Or use `make deploy-api` (set `PROJECT_ID` and optionally `GEMINI_API_KEY`).
+- **One-command deploy:** `make deploy` or `./scripts/deploy.sh`. See [docs/deploy-gcp.md](../docs/deploy-gcp.md).
+- **Backend only:** `make deploy-api` (set `PROJECT_ID` and optionally `GEMINI_API_KEY`).
