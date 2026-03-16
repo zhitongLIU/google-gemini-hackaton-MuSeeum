@@ -111,6 +111,12 @@ type Status = "disconnected" | "connecting" | "ready" | "error";
 export type UseLiveSessionOptions = {
   /** When false, mic is not streamed (e.g. hold-to-speak: only stream while true). Default true. */
   isRecording?: boolean;
+  /** Optional metadata override (e.g. from Art Info candidate) so live agent gets title/artist etc. without waiting for store. */
+  artworkTitle?: string | null;
+  artworkArtist?: string | null;
+  artworkYear?: string | null;
+  artworkPeriod?: string | null;
+  artworkMuseumName?: string | null;
 };
 
 export function useLiveSession(
@@ -145,20 +151,17 @@ export function useLiveSession(
     readyRef.current = false;
 
     const artwork = artworkId ? store.getArtwork(artworkId) : undefined;
-    const url = getWsUrl(
-      sessionId,
-      accessCode,
-      artwork
-        ? {
-            artworkId,
-            artworkTitle: artwork.title,
-            artworkArtist: artwork.artist,
-            artworkYear: artwork.year,
-            artworkPeriod: artwork.period,
-            artworkMuseumName: artwork.museumName,
-          }
-        : { artworkId }
-    );
+    const meta: LiveMetadata = artworkId
+      ? {
+          artworkId,
+          artworkTitle: options?.artworkTitle ?? artwork?.title ?? null,
+          artworkArtist: options?.artworkArtist ?? artwork?.artist ?? null,
+          artworkYear: options?.artworkYear ?? artwork?.year ?? null,
+          artworkPeriod: options?.artworkPeriod ?? artwork?.period ?? null,
+          artworkMuseumName: options?.artworkMuseumName ?? artwork?.museumName ?? null,
+        }
+      : { artworkId: undefined };
+    const url = getWsUrl(sessionId, accessCode, meta);
     const ws = new WebSocket(url);
     wsRef.current = ws;
 
@@ -227,7 +230,16 @@ export function useLiveSession(
       ws.close();
       wsRef.current = null;
     };
-  }, [sessionId, accessCode, artworkId]);
+  }, [
+    sessionId,
+    accessCode,
+    artworkId,
+    options?.artworkTitle,
+    options?.artworkArtist,
+    options?.artworkYear,
+    options?.artworkPeriod,
+    options?.artworkMuseumName,
+  ]);
 
   const sendJson = useCallback((payload: object) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {

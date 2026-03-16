@@ -146,7 +146,7 @@ At the very end, after a blank line, write a line that begins with "Tags:" follo
     ],
     generationConfig: {
       temperature: 0.7,
-      maxOutputTokens: 1024,
+      maxOutputTokens: 4096,
     },
   };
 

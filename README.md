@@ -12,8 +12,11 @@ For full product and architecture details, see:
 - [docs/agent-app-architecture-guide.md](docs/agent-app-architecture-guide.md) — agent app design notes
 
 ## for judge testing
-use https://museeum-web-7dbzezb27a-od.a.run.app
-and code: hackathon2026a3ffc
+!!!
+
+!!! Use the provided code and link from judge_testing_code.md.zip to test the app
+
+!!!
 ---
 
 ## Repository layout

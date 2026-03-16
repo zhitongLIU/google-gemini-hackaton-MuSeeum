@@ -3,7 +3,6 @@ import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { store } from "../context/AppContext";
 import { api } from "../context/AppContext";
 import { useApp } from "../context/AppContext";
-import { useLiveSession } from "../hooks/useLiveSession";
 import type { ArtInfoCandidate } from "../lib/api";
 
 type LiveIdentificationProps = {
@@ -26,7 +25,7 @@ export function LiveIdentification({ imageDataUrl: imageProp, artworkId: artwork
   const [typedTitle, setTypedTitle] = useState("");
   const [showTypeInput, setShowTypeInput] = useState(false);
 
-  const { transcript, inputTranscript } = useLiveSession(sessionId ?? null, accessCode);
+  // Live agent is not used on the identification screen; docent speaks on the artwork page after confirmation.
 
   // Load artwork from store if we have artworkId
   useEffect(() => {
@@ -215,7 +214,7 @@ export function LiveIdentification({ imageDataUrl: imageProp, artworkId: artwork
                 </span>
               )}
             </div>
-            <p className="text-light-gray text-xs mt-2">Say &quot;yes&quot; to confirm, or tell me the correct name</p>
+            <p className="text-light-gray text-xs mt-2">Confirm to continue — the docent will talk about this artwork on the next page.</p>
           </div>
         )}
 
@@ -246,23 +245,15 @@ export function LiveIdentification({ imageDataUrl: imageProp, artworkId: artwork
             </div>
           </div>
         ) : (
-          <>
-            {(transcript || inputTranscript) && (
-              <div className="p-3 rounded-lg bg-black/40 text-sm space-y-1">
-                {inputTranscript && <p className="text-light-gray">You: {inputTranscript}</p>}
-                {transcript && <p>Docent: {transcript}</p>}
-              </div>
-            )}
-            {candidate && (
-              <button
-                type="button"
-                onClick={() => setShowTypeInput(true)}
-                className="text-gold-light text-sm underline"
-              >
-                Or type it myself
-              </button>
-            )}
-          </>
+          candidate && (
+            <button
+              type="button"
+              onClick={() => setShowTypeInput(true)}
+              className="text-gold-light text-sm underline"
+            >
+              Or type it myself
+            </button>
+          )
         )}
 
         {error && <p className="text-red-400 text-sm">{error}</p>}
@@ -270,18 +261,14 @@ export function LiveIdentification({ imageDataUrl: imageProp, artworkId: artwork
 
       {candidate && !showTypeInput && (
         <div className="p-4 flex flex-col items-center gap-2 shrink-0">
-          {transcript && (
-            <p className="text-gold-light text-xs mb-1">MuSeeum is speaking...</p>
-          )}
           <button
             type="button"
             onClick={handleConfirmFromCandidate}
-            className="w-20 h-20 rounded-full bg-gold-primary shadow-[0_0_24px_rgba(176,138,31,0.5)] flex items-center justify-center text-3xl"
-            aria-label="Tap to speak"
+            className="w-full py-3 rounded-full bg-gold-primary text-white font-medium shadow-[0_0_24px_rgba(176,138,31,0.3)]"
           >
-            🎙
+            Confirm & continue
           </button>
-          <span className="text-light-gray text-xs">Tap to speak</span>
+          <span className="text-light-gray text-xs">Or wait 5 seconds to auto-confirm</span>
         </div>
       )}
     </div>
